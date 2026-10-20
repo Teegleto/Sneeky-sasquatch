@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Sneeky Sasquatch</title>
+<meta name="description" content="Sneak around a campground as a hungry sasquatch: steal snacks, dodge the ranger, fish, golf and pull off the great cake heist.">
+<meta name="theme-color" content="#1d2a17">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@600;700;800&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="c" aria-label="Game world"></canvas>
+
+  <div id="hud" hidden>
+    <div id="hudTL">
+      <div class="panel stats ui">
+        <div class="bar hunger" id="barHunger" title="Hunger"><span class="ico"></span><div class="track"><div class="fill"></div></div></div>
+        <div class="bar energy" id="barEnergy" title="Energy"><span class="ico"></span><div class="track"><div class="fill"></div></div></div>
+      </div>
+      <div id="chips"></div>
+      <div class="panel quest ui" id="questBox"><div class="qt"></div><div class="qd"></div></div>
+    </div>
+    <div id="hudTR">
+      <div class="panel clock ui">
+        <span id="clockIcon"></span>
+        <div class="clock-txt"><div id="dayTxt">Day 1</div><div id="timeTxt">7:30 AM</div></div>
+        <div id="moneyTxt">$0</div>
+      </div>
+      <canvas id="mini" class="ui" width="150" height="116" title="Open map (M)"></canvas>
+      <div class="hbtns ui">
+        <button id="bMap" class="hbtn" title="Map (M)" aria-label="Map"></button>
+        <button id="bQuest" class="hbtn" title="Quests (J)" aria-label="Quests"></button>
+        <button id="bWard" class="hbtn" title="Wardrobe (C)" aria-label="Wardrobe"></button>
+        <button id="bMenu" class="hbtn" title="Menu (Esc)" aria-label="Menu"></button>
+      </div>
+    </div>
+    <div id="loot" class="panel ui" hidden></div>
+    <div id="prompt" class="ui" hidden></div>
+    <div id="hotbar" class="ui"></div>
+    <div id="itemMenu" class="panel ui" hidden></div>
+  </div>
+
+  <div id="touch">
+    <div id="joy"><div id="joyKnob"></div></div>
+    <button id="btnBag" class="tbtn" aria-label="Backpack"><span id="bagCount"></span></button>
+    <button id="btnRun" class="tbtn" aria-label="Run"></button>
+    <button id="btnAction" class="tbtn" aria-label="Interact"></button>
+  </div>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <div id="dialog" class="panel ui" hidden>
+    <canvas id="dlgPortrait" width="192" height="192"></canvas>
+    <div class="dlg-main">
+      <div id="dlgName"></div>
+      <p id="dlgText"></p>
+      <div id="dlgBtns"></div>
+    </div>
+  </div>
+
+  <div id="modalWrap" class="ui" hidden><div id="modal" class="panel"></div></div>
+
+  <div id="title" hidden>
+    <div class="title-card">
+      <div class="logo">
+        <span class="logo-top">Sneeky</span>
+        <span class="logo-bot">Sasquatch</span>
+      </div>
+      <p class="tagline">Steal snacks. Dodge the ranger. Pull off the great cake heist.</p>
+      <div id="titleBtns"></div>
+      <p class="title-foot">Best with a keyboard, but phones work too. Your progress saves in this browser.</p>
+    </div>
+  </div>
+
+  <div id="fade"></div>
+  <div id="loading">Waking up the forest&hellip;</div>
+</div>
+<script src="js/core.js"></script>
+<script src="js/data.js"></script>
+<script src="js/world.js"></script>
+<script src="js/render.js"></script>
+<script src="js/entities.js"></script>
+<script src="js/minigames.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
