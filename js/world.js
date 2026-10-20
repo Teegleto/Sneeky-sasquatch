@@ -118,13 +118,16 @@
   // ---------- objects & spatial hashes ----------
   W.objects = []; W.colliders = []; W.interactables = [];
   W.lights = []; W.containers = []; W.pickups = []; W.bushes = []; W.sites = [];
-  W.chash = {}; W.dhash = {};
+  // Spatial hashes are flat arrays of buckets indexed by cell number, so queries build no strings.
+  W.hcols = Math.ceil(W.w / W.HC) + 1; W.hrows = Math.ceil(W.h / W.HC) + 1;
+  W.dcols = Math.ceil(W.w / W.DC) + 1; W.drows = Math.ceil(W.h / W.DC) + 1;
+  W.chash = new Array(W.hcols * W.hrows); W.dhash = new Array(W.dcols * W.drows);
 
-  function hkey(c, r) { return c + ',' + r; }
-  function addToHash(hash, size, o, x0, y0, x1, y1) {
-    var c0 = Math.floor(x0 / size), c1 = Math.floor(x1 / size), r0 = Math.floor(y0 / size), r1 = Math.floor(y1 / size);
+  function addToHash(hash, size, cols, rows, o, x0, y0, x1, y1) {
+    var c0 = clamp(Math.floor(x0 / size), 0, cols - 1), c1 = clamp(Math.floor(x1 / size), 0, cols - 1);
+    var r0 = clamp(Math.floor(y0 / size), 0, rows - 1), r1 = clamp(Math.floor(y1 / size), 0, rows - 1);
     for (var r = r0; r <= r1; r++) for (var c = c0; c <= c1; c++) {
-      var k = hkey(c, r);
+      var k = r * cols + c;
       (hash[k] || (hash[k] = [])).push(o);
     }
   }
@@ -136,29 +139,32 @@
   function add(o) {
     if (o.sortY === undefined) o.sortY = o.y;
     W.objects.push(o);
-    if (o.col) { W.colliders.push(o); var bb = colBounds(o); addToHash(W.chash, W.HC, o, bb[0], bb[1], bb[2], bb[3]); }
+    if (o.col) { W.colliders.push(o); var bb = colBounds(o); addToHash(W.chash, W.HC, W.hcols, W.hrows, o, bb[0], bb[1], bb[2], bb[3]); }
     if (o.act) W.interactables.push(o);
-    if (!o.noDraw) addToHash(W.dhash, W.DC, o, o.x, o.y, o.x, o.y);
+    if (!o.noDraw) addToHash(W.dhash, W.DC, W.dcols, W.drows, o, o.x, o.y, o.x, o.y);
     return o;
   }
   W.add = add;
 
+  // Objects spanning several cells are reported once, using a per-query stamp instead of a Set.
+  var qstamp = 0;
   W.queryCol = function (x0, y0, x1, y1) {
-    var out = [], seen = W._seen || (W._seen = new Set());
-    seen.clear();
-    var c0 = Math.floor(x0 / W.HC), c1 = Math.floor(x1 / W.HC), r0 = Math.floor(y0 / W.HC), r1 = Math.floor(y1 / W.HC);
+    var out = [], stamp = ++qstamp, cols = W.hcols;
+    var c0 = Math.max(0, Math.floor(x0 / W.HC)), c1 = Math.min(cols - 1, Math.floor(x1 / W.HC));
+    var r0 = Math.max(0, Math.floor(y0 / W.HC)), r1 = Math.min(W.hrows - 1, Math.floor(y1 / W.HC));
     for (var r = r0; r <= r1; r++) for (var c = c0; c <= c1; c++) {
-      var list = W.chash[hkey(c, r)];
+      var list = W.chash[r * cols + c];
       if (!list) continue;
-      for (var i = 0; i < list.length; i++) { var o = list[i]; if (!seen.has(o)) { seen.add(o); out.push(o); } }
+      for (var i = 0; i < list.length; i++) { var o = list[i]; if (o._qs !== stamp) { o._qs = stamp; out.push(o); } }
     }
     return out;
   };
   W.queryDraw = function (x0, y0, x1, y1) {
-    var out = [];
-    var c0 = Math.floor(x0 / W.DC), c1 = Math.floor(x1 / W.DC), r0 = Math.floor(y0 / W.DC), r1 = Math.floor(y1 / W.DC);
+    var out = [], cols = W.dcols;
+    var c0 = Math.max(0, Math.floor(x0 / W.DC)), c1 = Math.min(cols - 1, Math.floor(x1 / W.DC));
+    var r0 = Math.max(0, Math.floor(y0 / W.DC)), r1 = Math.min(W.drows - 1, Math.floor(y1 / W.DC));
     for (var r = r0; r <= r1; r++) for (var c = c0; c <= c1; c++) {
-      var list = W.dhash[hkey(c, r)];
+      var list = W.dhash[r * cols + c];
       if (list) for (var i = 0; i < list.length; i++) out.push(list[i]);
     }
     return out;
@@ -287,64 +293,96 @@
       }
     return null;
   }
-  W.findPath = function (sx, sy, tx, ty) {
-    var C = W.ncols, R = W.nrows;
-    var s = nearestFree(clamp(Math.floor(sx / W.N), 0, C - 1), clamp(Math.floor(sy / W.N), 0, R - 1));
-    var t = nearestFree(clamp(Math.floor(tx / W.N), 0, C - 1), clamp(Math.floor(ty / W.N), 0, R - 1));
-    if (!s || !t) return null;
-    var start = s[1] * C + s[0], goal = t[1] * C + t[0];
-    var g = new Float32Array(C * R).fill(Infinity), came = new Int32Array(C * R).fill(-1), closed = new Uint8Array(C * R);
-    var heap = [], hf = [];
-    function hpush(n, f) {
-      heap.push(n); hf.push(f);
-      var i = heap.length - 1;
-      while (i > 0) { var p = (i - 1) >> 1; if (hf[p] <= hf[i]) break; swap(i, p); i = p; }
+  // Cheap straight-line test on the navigation grid, used to smooth A* paths.
+  W.navLine = function (ax, ay, bx, by) {
+    var d = Math.hypot(bx - ax, by - ay), n = Math.ceil(d / 12);
+    for (var i = 1; i <= n; i++) {
+      var t = i / n;
+      if (!W.navFree(ax + (bx - ax) * t, ay + (by - ay) * t)) return false;
     }
-    function swap(a, b) { var t1 = heap[a]; heap[a] = heap[b]; heap[b] = t1; var t2 = hf[a]; hf[a] = hf[b]; hf[b] = t2; }
-    function hpop() {
-      var top = heap[0], last = heap.pop(), lf = hf.pop();
-      if (heap.length) {
-        heap[0] = last; hf[0] = lf;
+    return true;
+  };
+  // A* search buffers are allocated once and reused; a generation counter marks what this search touched.
+  var pf = null;
+  function pfBuffers(n) {
+    if (!pf || pf.n !== n) {
+      pf = { n: n, gen: 0, g: new Float32Array(n), came: new Int32Array(n), seen: new Uint32Array(n), closed: new Uint32Array(n), cap: n * 8, heap: new Int32Array(n * 8), hf: new Float32Array(n * 8) };
+    }
+    pf.gen++;
+    return pf;
+  }
+  W.findPath = function (sx, sy, tx, ty) {
+    var C = W.ncols, R = W.nrows, N = W.N;
+    var tc = clamp(Math.floor(tx / N), 0, C - 1), tr = clamp(Math.floor(ty / N), 0, R - 1);
+    var s = nearestFree(clamp(Math.floor(sx / N), 0, C - 1), clamp(Math.floor(sy / N), 0, R - 1));
+    var t = nearestFree(tc, tr);
+    if (!s || !t) return null;
+    // if the target itself is blocked, stop at the nearest free cell instead of walking into the obstacle
+    var end = (t[0] === tc && t[1] === tr) ? [tx, ty] : [t[0] * N + N / 2, t[1] * N + N / 2];
+    var start = s[1] * C + s[0], goal = t[1] * C + t[0];
+    if (start === goal) return [end];
+    var B = pfBuffers(C * R), gen = B.gen, g = B.g, came = B.came, seen = B.seen, closed = B.closed, heap = B.heap, hf = B.hf, cap = B.cap;
+    var size = 0, nav = W.nav;
+    function push(node, f) {
+      if (size >= cap) return;
+      var i = size++;
+      heap[i] = node; hf[i] = f;
+      while (i > 0) {
+        var p = (i - 1) >> 1;
+        if (hf[p] <= hf[i]) break;
+        var tn = heap[p]; heap[p] = heap[i]; heap[i] = tn; var tf = hf[p]; hf[p] = hf[i]; hf[i] = tf;
+        i = p;
+      }
+    }
+    function pop() {
+      var top = heap[0];
+      size--;
+      if (size > 0) {
+        heap[0] = heap[size]; hf[0] = hf[size];
         var i = 0;
         for (;;) {
           var l = i * 2 + 1, r2 = l + 1, m = i;
-          if (l < heap.length && hf[l] < hf[m]) m = l;
-          if (r2 < heap.length && hf[r2] < hf[m]) m = r2;
-          if (m === i) break; swap(i, m); i = m;
+          if (l < size && hf[l] < hf[m]) m = l;
+          if (r2 < size && hf[r2] < hf[m]) m = r2;
+          if (m === i) break;
+          var tn = heap[m]; heap[m] = heap[i]; heap[i] = tn; var tf = hf[m]; hf[m] = hf[i]; hf[i] = tf;
+          i = m;
         }
       }
       return top;
     }
-    function h(n) { var dx = Math.abs(n % C - t[0]), dy = Math.abs(Math.floor(n / C) - t[1]); return Math.max(dx, dy) + 0.414 * Math.min(dx, dy); }
-    g[start] = 0; hpush(start, h(start));
+    var gx = t[0], gy = t[1];
+    function h(cx, cy) { var dx = Math.abs(cx - gx), dy = Math.abs(cy - gy); return Math.max(dx, dy) + 0.414 * Math.min(dx, dy); }
+    seen[start] = gen; g[start] = 0; came[start] = -1;
+    push(start, h(s[0], s[1]));
     var iter = 0, found = false;
-    while (heap.length && iter++ < 9000) {
-      var cur = hpop();
+    while (size > 0 && iter++ < 9000) {
+      var cur = pop();
       if (cur === goal) { found = true; break; }
-      if (closed[cur]) continue;
-      closed[cur] = 1;
-      var cx = cur % C, cy = Math.floor(cur / C);
+      if (closed[cur] === gen) continue;
+      closed[cur] = gen;
+      var cx = cur % C, cy = (cur - cx) / C, gc = g[cur];
       for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
         if (!dx && !dy) continue;
         var nx = cx + dx, ny = cy + dy;
         if (nx < 0 || ny < 0 || nx >= C || ny >= R) continue;
         var n = ny * C + nx;
-        if (W.nav[n] || closed[n]) continue;
-        if (dx && dy && (W.nav[cy * C + nx] || W.nav[ny * C + cx])) continue;
-        var ng = g[cur] + (dx && dy ? 1.414 : 1);
-        if (ng < g[n]) { g[n] = ng; came[n] = cur; hpush(n, ng + h(n)); }
+        if (nav[n] || closed[n] === gen) continue;
+        if (dx && dy && (nav[cy * C + nx] || nav[ny * C + cx])) continue;
+        var ng = gc + (dx && dy ? 1.414 : 1);
+        if (seen[n] !== gen || ng < g[n]) { seen[n] = gen; g[n] = ng; came[n] = cur; push(n, ng + h(nx, ny)); }
       }
     }
     if (!found) return null;
     var path = [], node = goal;
-    while (node !== -1 && node !== start) { path.push([node % C * W.N + W.N / 2, Math.floor(node / C) * W.N + W.N / 2]); node = came[node]; }
+    while (node !== -1 && node !== start) { var nc = node % C; path.push([nc * N + N / 2, (node - nc) / C * N + N / 2]); node = came[node]; }
     path.reverse();
-    if (path.length) path[path.length - 1] = [tx, ty];
-    // string-pulling
+    path[path.length - 1] = end;
+    // string-pulling: skip ahead to the furthest waypoint that is still in a straight, clear line
     var out = [], ax = sx, ay = sy, i = 0;
     while (i < path.length) {
-      var j = path.length - 1;
-      while (j > i && !W.walkLine(ax, ay, path[j][0], path[j][1], 8)) j--;
+      var j = i;
+      while (j + 1 < path.length && W.navLine(ax, ay, path[j + 1][0], path[j + 1][1])) j++;
       out.push(path[j]); ax = path[j][0]; ay = path[j][1]; i = j + 1;
     }
     return out;
@@ -478,7 +516,7 @@
         site.line = add({ type: 'clothesline', x: cx + 10, y: cy + 112, act: 'clothesline', label: 'Take the Plaid Shirt', ix: cx + 10, iy: cy + 112 });
         W.clothesline = site.line;
       }
-      site.sit = [[cx - 62, cy + 52], [cx - 4, cy + 72], [cx + 40, cy + 40]];
+      site.sit = [[cx - 70, cy + 68], [cx - 4, cy + 70], [cx + 40, cy + 40]];
       // hiding bushes around the site
       var a = Math.atan2(cy - W.loop.y, cx - W.loop.x);
       [-1.25, 0, 1.25].forEach(function (o, j) {

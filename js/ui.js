@@ -54,6 +54,9 @@
     $('modalWrap').addEventListener('click', function (e) { if (e.target.id === 'modalWrap' && UI.modalClosable) UI.closeModal(); });
     document.addEventListener('click', function (e) {
       if (!e.target.closest('#hotbar') && !e.target.closest('#itemMenu')) UI.hideItemMenu();
+      // after a click, HUD buttons give focus back so Enter/Space keep controlling the game
+      var b = e.target.closest('#hud button, #touch button, #hud .slot');
+      if (b && b.blur) b.blur();
     });
     SS.setupTouch($('app'));
     var cv = $('c'), ptr = SS.input.pointer;
@@ -70,18 +73,21 @@
   };
 
   // ---------------- HUD ----------------
-  var miniT = 0;
+  // The HUD runs every frame, so it only touches the DOM when a value actually changes.
+  var miniT = 0, last = {}, els = {};
+  function node(id) { return els[id] || (els[id] = $(id)); }
+  function setText(id, v) { if (last[id] !== v) { last[id] = v; node(id).textContent = v; } }
   UI.update = function (dt) {
     var G = SS.game;
     if (G.mode !== 'play') return;
     var P = G.player;
     setBar('barHunger', P.hunger);
     setBar('barEnergy', P.energy);
-    $('dayTxt').textContent = 'Day ' + G.day;
-    $('timeTxt').textContent = SS.fmtTime(G.time);
+    setText('dayTxt', 'Day ' + G.day);
+    setText('timeTxt', SS.fmtTime(G.time));
     var night = G.hour < 6 || G.hour >= 20;
-    if (UI._night !== night) { $('clockIcon').innerHTML = night ? SVG.moon : SVG.sun; UI._night = night; }
-    $('moneyTxt').textContent = '$' + P.money;
+    if (UI._night !== night) { node('clockIcon').innerHTML = night ? SVG.moon : SVG.sun; UI._night = night; }
+    setText('moneyTxt', '$' + P.money);
     // chips
     var chips = [];
     if (P.hiddenIn) chips.push(['Hidden', 'good']);
@@ -111,15 +117,16 @@
       if (ptxt) { pr.innerHTML = ''; pr.appendChild(el('kbd', { text: SS.input.isTouch ? 'Tap' : 'E' })); pr.appendChild(document.createTextNode(' ' + ptxt)); pr.hidden = false; }
       else pr.hidden = true;
     }
-    $('btnAction').classList.toggle('ready', !!ptxt || !!G.fishing);
+    var ready = !!ptxt || !!G.fishing;
+    if (last.ready !== ready) { last.ready = ready; node('btnAction').classList.toggle('ready', ready); }
     miniT -= dt;
     if (miniT <= 0) { miniT = 0.15; drawMini(); }
     if (UI.lootC) updateLoot();
   };
   function setBar(id, v) {
-    var b = $(id), f = b.querySelector('.fill');
-    f.style.width = Math.max(0, Math.min(100, v)) + '%';
-    b.classList.toggle('low', v < 22);
+    var w = Math.round(Math.max(0, Math.min(100, v)) * 2) / 2, low = v < 22;
+    if (last[id] !== w) { last[id] = w; (els[id + 'F'] || (els[id + 'F'] = node(id).querySelector('.fill'))).style.width = w + '%'; }
+    if (last[id + 'L'] !== low) { last[id + 'L'] = low; node(id).classList.toggle('low', low); }
   }
   function drawMini() {
     var G = SS.game, c = $('mini'), g = c.getContext('2d'), P = G.player;
@@ -292,6 +299,7 @@
       var last = idx === lines.length - 1;
       if (last && choices && choices.length) {
         choices.forEach(function (c) { btns.appendChild(btn(c.label, function () { close(); if (c.fn) c.fn(); }, c.cls)); });
+        if (!SS.input.isTouch) btns.firstChild.focus();
       } else {
         btns.appendChild(btn(last ? 'OK' : 'Next', next));
       }
@@ -501,7 +509,11 @@
       opts.appendChild(tg);
       body.appendChild(opts);
     }
-    UI.openModal('Wardrobe', body, { cls: 'ward-m', onClose: function () { cancelAnimationFrame(anim); P.wanted = P.wanted > 0 && G.anyoneSees() ? P.wanted : 0; } });
+    var before = P.outfit.hat + '/' + P.outfit.top;
+    UI.openModal('Wardrobe', body, { cls: 'ward-m', onClose: function () {
+      cancelAnimationFrame(anim);
+      if (P.wanted > 0 && P.outfit.hat + '/' + P.outfit.top !== before && !G.anyoneSees()) { P.wanted = 0; UI.toast('New look! Nobody recognizes you now.'); }
+    } });
     render();
     draw();
   };

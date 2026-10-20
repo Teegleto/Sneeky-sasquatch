@@ -118,7 +118,8 @@ var SS = window.SS = window.SS || {};
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     if (!input.keys[e.code]) input.pressed[e.code] = true;
     input.keys[e.code] = true;
-    if (gameKeys[e.code]) e.preventDefault();
+    // let Space/Enter press a focused dialogue choice; otherwise they're game keys
+    if (gameKeys[e.code] && !(e.target && e.target.closest && e.target.closest('#dialog button'))) e.preventDefault();
     if (SS.audio) SS.audio.unlock();
   });
   window.addEventListener('keyup', function (e) {
@@ -144,7 +145,8 @@ var SS = window.SS = window.SS || {};
     if (x || y) { var l = Math.hypot(x, y); return { x: x / l, y: y / l }; }
     if (input.joy.active) {
       var jl = Math.hypot(input.joy.x, input.joy.y);
-      if (jl > 0.15) return { x: input.joy.x / Math.max(1, jl), y: input.joy.y / Math.max(1, jl), mag: Math.min(1, jl) };
+      // unit direction plus a separate magnitude, so a half-tilted stick means half speed
+      if (jl > 0.15) return { x: input.joy.x / jl, y: input.joy.y / jl, mag: SS.clamp((jl - 0.1) / 0.6, 0.3, 1) };
     }
     return { x: 0, y: 0 };
   };
@@ -246,8 +248,8 @@ var SS = window.SS = window.SS || {};
     setSfx: function (on) { this.sfxOn = on; if (this.sfx) this.sfx.gain.value = on ? 0.55 : 0; },
     setMusicOn: function (on) { this.musicOn = on; if (this.music) this.music.gain.value = on ? 0.22 : 0; },
     tone: function (freq, dur, o) {
-      if (!this.ctx) return;
       o = o || {};
+      if (!this.ctx || (!o.dest && !this.sfxOn)) return;
       var t = this.ctx.currentTime + (o.delay || 0);
       var osc = this.ctx.createOscillator(), g = this.ctx.createGain();
       osc.type = o.type || 'square';
@@ -266,8 +268,8 @@ var SS = window.SS = window.SS || {};
       osc.start(t); osc.stop(t + dur + 0.05);
     },
     noise: function (dur, o) {
-      if (!this.ctx) return;
       o = o || {};
+      if (!this.ctx || (!o.dest && !this.sfxOn)) return;
       var t = this.ctx.currentTime + (o.delay || 0);
       var src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
       var f = this.ctx.createBiquadFilter(); f.type = o.filter || 'lowpass'; f.frequency.value = o.freq || 1200; f.Q.value = o.q || 1;
@@ -323,6 +325,8 @@ var SS = window.SS = window.SS || {};
     _schedule: function () {
       if (!this.ctx || this.mode === 'none') return;
       var now = this.ctx.currentTime;
+      // don't build oscillators nobody will hear
+      if (!this.musicOn || document.hidden || this.ctx.state !== 'running') { this._next = now + 0.1; return; }
       if (this._next < now) this._next = now + 0.05;
       var modes = {
         day: { bpm: 104, scale: [0, 2, 4, 7, 9, 12, 14, 16], chords: [0, -3, 5, 7], root: 60 },

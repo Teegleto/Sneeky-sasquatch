@@ -8,6 +8,7 @@
   var F = SS.Fishing = {};
   F.start = function (G, bx, by, kind) {
     var P = G.player;
+    if (P.vehicle) { P.vehicle.vx = P.vehicle.vy = 0; P.vehicle.speed = 0; }
     G.fishing = { phase: 'cast', t: 0, bx: bx, by: by, kind: kind, sx: P.x, sy: P.y - 30, nib: 0, dip: 0 };
     SS.audio.play('cast');
   };
@@ -175,7 +176,7 @@
   var FRICTION = { fair: 340, rough: 660, sand: 1700, green: 230 };
 
   Golf.start = function (G) {
-    var g = Golf.s = { hole: 0, scores: [], strokes: 0, msg: null, msgT: 0, done: false, t: 0, club: 'driver', aim: 0, power: 0, drag: null };
+    var g = Golf.s = { hole: 0, scores: [], strokes: 0, msg: null, msgT: 0, done: false, t: 0, club: 'driver', aim: 0, power: 0, drag: null, lock: 0.35 };
     Golf.setupHole();
     G.mode = 'golf';
     SS.audio.setMusic('golf');
@@ -230,6 +231,8 @@
     g.t += dt;
     if (g.msgT > 0) g.msgT -= dt;
     if (g.swingT > 0) g.swingT -= dt;
+    // ignore the key press that started the round
+    if (g.lock > 0) { g.lock -= dt; return; }
     var h = Golf.HOLES[g.hole], b = g.ball;
     var m = screenMap(cam), ptr = input.pointer, btn = Golf.buttons(cam);
     if (g.done) {

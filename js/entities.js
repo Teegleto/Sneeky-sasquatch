@@ -98,6 +98,8 @@
     if (this.stepToward(p[0], p[1], speed, dt) || Math.hypot(p[0] - this.x, p[1] - this.y) < 8) this.path.shift();
     if (this.stuckT > 1.2) {
       this.stuckT = 0;
+      var last = this.path[this.path.length - 1];
+      if (last && Math.hypot(last[0] - this.x, last[1] - this.y) < 36) { this.path = []; this.moving = false; return true; }
       if (this.goal) { this.path = W.findPath(this.x, this.y, this.goal[0], this.goal[1]); if (!this.path) { this.path = []; return true; } }
       else this.path.shift();
     }
@@ -151,6 +153,7 @@
     this.t += dt;
     if (this.bubbleT > 0) { this.bubbleT -= dt; if (this.bubbleT <= 0) this.bubble = null; }
     if (this.alertCD > 0) this.alertCD -= dt;
+    if (this.kind === 'guest' && !G.party.active) { this.present = false; return; }
     var shouldBeUp = this.awakeNow(G);
     var P = G.player;
 
@@ -168,7 +171,6 @@
       if (shouldBeUp && !this.present) { this.present = true; this.x = this.exit.x; this.y = this.exit.y; this.state = 'arrive'; this.goTo(this.home.x, this.home.y); }
       if (!this.present) return;
     }
-    if (this.kind === 'guest' && !G.party.active) { this.present = false; return; }
 
     // vision & suspicion
     var see = (this.state === 'tobed' || this.state === 'leaving') ? 0 : SS.seePlayer(this, G, false);
@@ -176,7 +178,7 @@
     var blendIn = P.disguised() && P.wanted <= 0 && !P.carrying;
     if (see > 0 && !blendIn && this.state !== 'alarm' && this.state !== 'cower') {
       var rate = (0.55 + see * 2.2) * (P.run ? 1.3 : 1);
-      if (this.sus < 0.05) { this.say('?', 1.2); SS.audio.play('huh'); }
+      if (this.sus <= 0) { this.say('?', 1.2); SS.audio.play('huh'); }
       this.sus += rate * dt;
       this.faceToward(P.x, P.y, dt, 3);
       if (this.sus >= 1) this.panic(G, 'bigfoot');
@@ -242,13 +244,15 @@
     if (this.kind === 'camper') {
       var r = rnd();
       var site = this.site;
-      if (r < 0.45) {
+      if (Math.hypot(this.x - site.x, this.y - site.y) > 130) {
+        this.state = 'walk'; this.goTo(site.x + rnd.range(-25, 25), site.y + rnd.range(0, 40));
+      } else if (r < 0.45) {
         var sp = this.spots[rnd.int(0, this.spots.length - 1)];
-        this.state = 'walk'; this.path = [[sp[0], sp[1]]]; this.goal = null; this.sitAfter = true;
+        this.state = 'walk'; this.goTo(sp[0], sp[1]); this.sitAfter = true;
         this.faceAfter = Math.atan2(site.y + 40 - sp[1], site.x - 30 - sp[0]) + rnd.range(-0.6, 0.6);
       } else if (r < 0.85) {
         var a = rnd.range(0, TAU), d = rnd.range(20, 80);
-        this.state = 'walk'; this.path = [[site.x + Math.cos(a) * d, site.y + Math.sin(a) * d]]; this.goal = null;
+        this.state = 'walk'; this.goTo(site.x + Math.cos(a) * d, site.y + Math.sin(a) * d);
       } else {
         var dest = rnd.pick([[1550, 1300], [1440, 1270], [1660, 1270]]);
         this.state = 'walk'; this.goTo(dest[0], dest[1]);
@@ -323,7 +327,7 @@
     var blendIn = P.disguised() && P.wanted <= 0 && !P.carrying;
     this.seesPlayer = see > 0;
     if (see > 0 && !blendIn && !chasing) {
-      if (this.sus < 0.05) { this.say('?', 1); SS.audio.play('huh'); }
+      if (this.sus <= 0) { this.say('?', 1); SS.audio.play('huh'); }
       this.sus += (1 + see * 3) * dt;
       this.faceToward(P.x, P.y, dt, 4);
       if (this.sus >= 1) this.startChase(G);
@@ -384,7 +388,6 @@
         if (this.followPath(this.walk, dt)) { this.state = heist ? 'party' : 'patrol'; this.path = null; }
         break;
     }
-    if (this.state !== 'chase') this.chaseMusic = false;
   };
   Ranger.prototype.goBack = function () {
     this.state = 'return';

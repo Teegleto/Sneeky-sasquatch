@@ -462,13 +462,17 @@
     var s, x = o.x, y = o.y;
     switch (o.type) {
       case 'tree':
-        R.blit(ctx, R.treeSprite(o), x, y); break;
+        R.blit(ctx, o._spr || (o._spr = R.treeSprite(o)), x, y); break;
       case 'bush':
         var bx = x + (o.shake > 0 ? Math.sin(t * 50) * o.shake * 3 : 0);
-        R.blit(ctx, bushSprite(o.r, o.v, o.berry), bx, y);
+        R.blit(ctx, o._spr || (o._spr = bushSprite(o.r, o.v, o.berry)), bx, y);
         if (o.berry && o.hasBerries) {
-          var rnd = SS.rng(Math.floor(o.x * 13 + o.y));
-          for (var i = 0; i < 9; i++) circ(ctx, bx + rnd.range(-o.r * 0.8, o.r * 0.8), y - rnd.range(o.r * 0.3, o.r * 1.2), 2.6, i % 3 ? '#d6324a' : '#4a5fd0');
+          if (!o._berries) {
+            var rnd = SS.rng(Math.floor(o.x * 13 + o.y));
+            o._berries = [];
+            for (var i = 0; i < 9; i++) o._berries.push([rnd.range(-o.r * 0.8, o.r * 0.8), -rnd.range(o.r * 0.3, o.r * 1.2), i % 3 ? '#d6324a' : '#4a5fd0']);
+          }
+          for (var bi = 0; bi < 9; bi++) { var bb = o._berries[bi]; circ(ctx, bx + bb[0], y + bb[1], 2.6, bb[2]); }
         }
         if (G && G.player.hiddenIn === o) {
           var pf = G.player.dirX || 0;
@@ -481,20 +485,20 @@
           });
         }
         break;
-      case 'rock': R.blit(ctx, rockSprite(o.v, o.s), x, y); break;
+      case 'rock': R.blit(ctx, o._spr || (o._spr = rockSprite(o.v, o.s)), x, y); break;
       case 'tent':
-        R.blit(ctx, tentSprite(o.color), o.tx, o.ty + 2);
+        R.blit(ctx, o._spr || (o._spr = tentSprite(o.color)), o.tx, o.ty + 2);
         break;
-      case 'table': R.blit(ctx, tableSprite(), x, y); break;
+      case 'table': R.blit(ctx, o._spr || (o._spr = tableSprite()), x, y); break;
       case 'basket': R.drawBasket(ctx, x, y, o.items.length > 0); break;
       case 'cooler': R.drawCooler(ctx, x, y, o.color || '#3c7fd6'); break;
       case 'trash': R.drawTrash(ctx, x + (o.shake > 0 ? Math.sin(t * 60) * 2 : 0), y); break;
       case 'campfire': R.drawCampfire(ctx, x, y, t, o.lit); break;
       case 'firepit': R.drawCampfire(ctx, x, y, t, o.lit); break;
-      case 'car': R.blit(ctx, carSprite(o.color), x, y); break;
-      case 'truck': R.blit(ctx, carSprite('#f3f1ea', true), x, y); break;
+      case 'car': R.blit(ctx, o._spr || (o._spr = carSprite(o.color)), x, y); break;
+      case 'truck': R.blit(ctx, o._spr || (o._spr = carSprite('#f3f1ea', true)), x, y); break;
       case 'building':
-        s = buildingSprite(o);
+        s = o._spr || (o._spr = buildingSprite(o));
         if (o.fade) { ctx.globalAlpha = 0.45; R.blit(ctx, s, x, y); ctx.globalAlpha = 1; }
         else R.blit(ctx, s, x, y);
         break;
@@ -1147,6 +1151,8 @@
   };
 
   // ---------- lighting ----------
+  // Darkness, light holes, warm glows and the dusk tint are all built in one half-resolution overlay,
+  // which is then composited onto the screen with a single drawImage.
   var lc = null, lg = null;
   R.drawLighting = function (ctx, cam, dark, lights, tint) {
     var w = Math.ceil(cam.vw / 2), h = Math.ceil(cam.vh / 2);
@@ -1156,11 +1162,12 @@
     lg.clearRect(0, 0, w, h);
     lg.fillStyle = 'rgba(10,14,40,' + dark.toFixed(3) + ')';
     lg.fillRect(0, 0, w, h);
+    var s = cam.scale / 2, i, l, x, y, r;
     lg.globalCompositeOperation = 'destination-out';
-    var s = cam.scale / 2;
-    lights.forEach(function (l) {
-      var x = (l.x - cam.x) * s, y = (l.y - cam.y) * s, r = l.r * s * (l.flicker || 1);
-      if (x < -r || y < -r || x > w + r || y > h + r) return;
+    for (i = 0; i < lights.length; i++) {
+      l = lights[i];
+      x = (l.x - cam.x) * s; y = (l.y - cam.y) * s; r = l.r * s * (l.flicker || 1);
+      if (x < -r || y < -r || x > w + r || y > h + r) continue;
       if (l.cone) {
         lg.save(); lg.translate(x, y); lg.rotate(l.angle);
         var gr = lg.createRadialGradient(0, 0, 0, 0, 0, r);
@@ -1168,26 +1175,27 @@
         lg.fillStyle = gr; lg.beginPath(); lg.moveTo(0, 0); lg.arc(0, 0, r, -l.cone, l.cone); lg.closePath(); lg.fill();
         lg.restore();
       } else {
+        var st = l.strength || 1;
         var g2 = lg.createRadialGradient(x, y, 0, x, y, r);
-        g2.addColorStop(0, 'rgba(0,0,0,' + (l.strength || 1) + ')'); g2.addColorStop(0.5, 'rgba(0,0,0,' + ((l.strength || 1) * 0.6) + ')'); g2.addColorStop(1, 'rgba(0,0,0,0)');
+        g2.addColorStop(0, 'rgba(0,0,0,' + st + ')'); g2.addColorStop(0.5, 'rgba(0,0,0,' + (st * 0.6) + ')'); g2.addColorStop(1, 'rgba(0,0,0,0)');
         lg.fillStyle = g2; lg.fillRect(x - r, y - r, r * 2, r * 2);
       }
-    });
+    }
+    // warm glow around fires, lamps and windows
+    lg.globalCompositeOperation = 'source-over';
+    var ga = (0.26 * dark).toFixed(3);
+    for (i = 0; i < lights.length; i++) {
+      l = lights[i];
+      if (!l.color || l.cone) continue;
+      x = (l.x - cam.x) * s; y = (l.y - cam.y) * s; r = l.r * s * 0.6 * (l.flicker || 1);
+      if (x < -r || y < -r || x > w + r || y > h + r) continue;
+      var g3 = lg.createRadialGradient(x, y, 0, x, y, r);
+      g3.addColorStop(0, l.color + ga + ')'); g3.addColorStop(1, l.color + '0)');
+      lg.fillStyle = g3; lg.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    if (tint) { lg.fillStyle = tint; lg.fillRect(0, 0, w, h); }
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(lc, 0, 0, w, h, 0, 0, cam.vw * cam.dpr, cam.vh * cam.dpr);
-    // warm glow
-    ctx.globalCompositeOperation = 'lighter';
-    var sd = cam.scale * cam.dpr;
-    lights.forEach(function (l) {
-      if (!l.color || l.cone) return;
-      var x = (l.x - cam.x) * sd, y = (l.y - cam.y) * sd, r = l.r * sd * 0.6 * (l.flicker || 1);
-      if (x < -r || y < -r || x > cam.vw * cam.dpr + r || y > cam.vh * cam.dpr + r) return;
-      var g3 = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g3.addColorStop(0, l.color + (0.28 * dark).toFixed(3) + ')'); g3.addColorStop(1, l.color + '0)');
-      ctx.fillStyle = g3; ctx.fillRect(x - r, y - r, r * 2, r * 2);
-    });
-    ctx.globalCompositeOperation = 'source-over';
-    if (tint) { ctx.fillStyle = tint; ctx.fillRect(0, 0, cam.vw * cam.dpr, cam.vh * cam.dpr); }
     ctx.restore();
   };
 })();

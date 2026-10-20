@@ -27,9 +27,11 @@
     if (loading) loading.hidden = true;
     var last = performance.now();
     function frame(ts) {
-      var dt = Math.min(0.05, Math.max(0, (ts - last) / 1000));
+      var raw = ts - last;
+      var dt = Math.min(0.05, Math.max(0, raw / 1000));
       last = ts;
       step(dt);
+      adaptQuality(raw);
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
@@ -37,9 +39,32 @@
     document.addEventListener('visibilitychange', function () { if (document.hidden && G.mode === 'play') G.save(); });
   };
 
+  // Adaptive resolution: if frames stay slow, render fewer pixels per CSS pixel (never below 0.75).
+  // After a long smooth stretch it tries one step back up, but never returns to a level that was too slow.
+  // The threshold sits above 33ms so phones capped at 30fps in battery-saver mode aren't mistaken for slow ones.
+  var quality = { cap: 2, acc: 0, n: 0, slow: 0, fast: 0, tooSlow: 9 };
+  function adaptQuality(rawMs) {
+    if (document.hidden || rawMs <= 0 || rawMs > 250) return;
+    quality.acc += rawMs; quality.n++;
+    if (quality.acc < 1500) return;
+    var avg = quality.acc / quality.n, dpr = G.cam.dpr;
+    quality.acc = 0; quality.n = 0;
+    if (avg > 35 && dpr > 0.75) {
+      quality.fast = 0;
+      if (++quality.slow >= 2) { quality.slow = 0; quality.tooSlow = Math.min(quality.tooSlow, dpr); quality.cap = Math.max(0.75, dpr - 0.25); resize(); }
+    } else {
+      quality.slow = 0;
+      var up = dpr + 0.25;
+      if (avg < 18 && up < quality.tooSlow && up <= Math.min(window.devicePixelRatio || 1, 2)) {
+        if (++quality.fast >= 8) { quality.fast = 0; quality.cap = up; resize(); }
+      } else quality.fast = 0;
+    }
+  }
+  G.quality = quality;
+
   function resize() {
     var cv = G.canvas, r = cv.parentElement.getBoundingClientRect();
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dpr = Math.min(window.devicePixelRatio || 1, 2, quality.cap);
     var cam = G.cam;
     cam.vw = Math.max(320, r.width); cam.vh = Math.max(240, r.height); cam.dpr = dpr;
     cv.width = Math.round(cam.vw * dpr); cv.height = Math.round(cam.vh * dpr);
@@ -298,7 +323,14 @@
     if (G.fishing || G.rummage) return null;
     if (P.vehicle) {
       var v = P.vehicle;
-      return focusObj('Get out of ' + v.def.name, v.x, v.y - 40, function () { G.exitVehicle(); });
+      // out on the open water the action button fishes; near land it lets you climb out
+      if (v.type !== 'boat' || landingSpot(v)) return focusObj('Get out of ' + v.def.name, v.x, v.y - 40, function () { G.exitVehicle(); });
+      return fishFocus(P);
+    }
+    if (P.hiddenIn) {
+      // from inside a bush you can only pick its own berries
+      var hb = P.hiddenIn;
+      return hb.berry && hb.hasBerries ? focusObj('Pick Berries', hb.x, hb.y - hb.r * 1.4, actBerry(hb)) : null;
     }
     var best = null, bd = 62;
     function consider(d, f) { if (d < bd) { bd = d; best = f; } }
@@ -329,7 +361,10 @@
         case 'pickup': if (o.active) consider(d - 6, focusObj(o.label, o.x, o.y - 18, actPickup(o))); break;
         case 'berry': if (o.hasBerries) consider(d + 4, focusObj('Pick Berries', o.x, o.y - o.r * 1.4, actBerry(o))); break;
         case 'clothesline': if (!G.flags.shirtTaken) consider(d, focusObj('Take the Plaid Shirt', o.x, o.y - 50, actShirt)); break;
-        case 'cave': consider(d, focusObj('Enter Your Cave', o.x, o.y - 60, function () { UI.openHome(); })); break;
+        case 'cave': consider(d, focusObj('Enter Your Cave', o.x, o.y - 60, function () {
+          if (G.ranger.state === 'chase') { UI.toast('Not with the Ranger right behind you! Lose him first.'); SS.audio.play('deny'); return; }
+          UI.openHome();
+        })); break;
         case 'door': consider(d, focusObj(o.label, ix, iy - 56, actDoor(o))); break;
         case 'house': consider(d + 6, focusObj(o.label, ix, iy - 50, actHouse(o))); break;
         case 'vending': consider(d, focusObj(o.label, o.x, o.y - 50, function () { UI.openShop('vending'); })); break;
@@ -339,22 +374,33 @@
       }
     }
     if (best) return best;
-    // fishing
-    if (P.gear.rod && !P.hiddenIn) {
-      for (var dd = 36; dd <= 96; dd += 15) {
-        var fx = P.x + Math.cos(P.dir) * dd, fy = P.y + Math.sin(P.dir) * dd;
-        var wk = W.waterKind(fx, fy);
-        if (wk && W.waterKind(fx + Math.cos(P.dir) * 20, fy + Math.sin(P.dir) * 20)) {
-          G.hint('fish', 'Press E while facing water to cast your line. When the bobber dips and "!" appears, press E fast!');
-          var bx = P.x + Math.cos(P.dir) * (dd + 26), by = P.y + Math.sin(P.dir) * (dd + 26);
-          if (!W.isWater(bx, by)) { bx = fx; by = fy; }
-          var kind = W.waterKind(bx, by) || wk;
-          if (kind === 'deep' && !P.vehicle) kind = 'lake';
-          return focusObj('Fish' + (P.bait ? ' (bait: ' + P.bait + ')' : ''), P.x, P.y - 60, (function (x, y, k) { return function () { SS.Fishing.start(G, x, y, k); }; })(bx, by, kind));
-        }
+    return fishFocus(P);
+  }
+  function fishFocus(P) {
+    if (!P.gear.rod) return null;
+    var cos = Math.cos(P.dir), sin = Math.sin(P.dir);
+    for (var dd = 36; dd <= 96; dd += 15) {
+      var fx = P.x + cos * dd, fy = P.y + sin * dd;
+      var wk = W.waterKind(fx, fy);
+      if (wk && W.waterKind(fx + cos * 20, fy + sin * 20)) {
+        G.hint('fish', 'Press E while facing water to cast your line. When the bobber dips and "!" appears, press E fast!');
+        var bx = P.x + cos * (dd + 26), by = P.y + sin * (dd + 26);
+        if (!W.isWater(bx, by)) { bx = fx; by = fy; }
+        var kind = W.waterKind(bx, by) || wk;
+        if (kind === 'deep' && !P.vehicle) kind = 'lake';
+        return focusObj('Fish' + (P.bait ? ' (bait: ' + P.bait + ')' : ''), P.x, P.y - 60, (function (x, y, k) { return function () { SS.Fishing.start(G, x, y, k); }; })(bx, by, kind));
       }
     }
-    if (P.vehicle && P.vehicle.type === 'boat') return best;
+    return null;
+  }
+  // a dry spot next to the vehicle where the sasquatch can step out, or null
+  function landingSpot(v) {
+    var P = G.player;
+    for (var r = 30; r <= 80; r += 10) for (var k = 0; k < 16; k++) {
+      var a = v.angle + Math.PI / 2 + k * Math.PI / 8;
+      var x = v.x + Math.cos(a) * r, y = v.y + Math.sin(a) * r;
+      if (W.footOK(x, y) && W.circleFree(x, y, P.r, 'foot')) return [x, y];
+    }
     return null;
   }
 
@@ -479,14 +525,11 @@
   };
   G.exitVehicle = function () {
     var P = G.player, v = P.vehicle;
-    for (var r = 30; r <= 80; r += 10) for (var k = 0; k < 16; k++) {
-      var a = v.angle + Math.PI / 2 + k * Math.PI / 8;
-      var x = v.x + Math.cos(a) * r, y = v.y + Math.sin(a) * r;
-      if (W.circleFree(x, y, P.r, 'foot')) {
-        P.vehicle = null; v.vx = v.vy = 0; v.speed = 0;
-        P.x = x; P.y = y;
-        return;
-      }
+    var spot = landingSpot(v);
+    if (spot) {
+      P.vehicle = null; v.vx = v.vy = 0; v.speed = 0;
+      P.x = spot[0]; P.y = spot[1];
+      return;
     }
     UI.toast(v.type === 'boat' ? 'Row closer to the shore or dock to get out.' : 'There\'s no room to get out here.');
   };
@@ -553,6 +596,14 @@
     UI.refresh();
   };
 
+  // the ranger heads back to his post and everyone calms down
+  function resetPursuit() {
+    var P = G.player, Rg = G.ranger;
+    Rg.x = W.rangerPost.x; Rg.y = W.rangerPost.y; Rg.state = 'patrol'; Rg.path = null; Rg.sus = 0; Rg.route = 0; Rg.pause = 0;
+    G.humans.forEach(function (h) { h.sus = 0; if (h.state === 'alarm' || h.state === 'cower' || h.state === 'investigate') { h.state = 'idle'; h.timer = 1; } });
+    G.fishing = null; G.rummage = null; UI.closeLoot();
+    P.wanted = 0; P.hiddenIn = null; P.exhaustT = 0;
+  }
   G.caught = function () {
     if (G.caughtLock) return;
     G.caughtLock = true;
@@ -565,11 +616,9 @@
       P.inv = [];
       if (P.carrying) { P.carrying = null; W.party.hasCake = true; }
       if (P.vehicle) { P.vehicle.vx = P.vehicle.vy = 0; P.vehicle = null; }
-      P.x = W.home.x; P.y = W.home.y; P.hiddenIn = null; P.wanted = 0;
+      P.x = W.home.x; P.y = W.home.y;
       G.time += 120; computeTime();
-      var Rg = G.ranger;
-      Rg.x = W.rangerPost.x; Rg.y = W.rangerPost.y; Rg.state = 'patrol'; Rg.path = null; Rg.sus = 0; Rg.route = 0;
-      G.humans.forEach(function (h) { h.sus = 0; if (h.state === 'alarm' || h.state === 'cower' || h.state === 'investigate') { h.state = 'idle'; h.timer = 1; } });
+      resetPursuit();
       UI.refresh();
       G.caughtLock = false;
       UI.dialog('narrator', 'Caught!', ['The Ranger caught you and dragged you all the way back to your cave.' + (lost ? ' Everything in your backpack was confiscated!' : ''), 'Tip: keep valuables in your cave stash, and stay out of sight.']);
@@ -579,11 +628,13 @@
     var P = G.player;
     if (G.caughtLock) return;
     G.caughtLock = true;
-    UI.closeLoot(); G.fishing = null;
+    UI.closeLoot(); G.fishing = null; G.rummage = null;
     UI.fade(function () {
-      P.inv = []; P.carrying = null; W.party.hasCake = true;
-      if (P.vehicle) P.vehicle = null;
-      P.x = W.home.x; P.y = W.home.y; P.hiddenIn = null;
+      P.inv = [];
+      if (P.carrying) { P.carrying = null; W.party.hasCake = true; }
+      if (P.vehicle) { P.vehicle.vx = P.vehicle.vy = 0; P.vehicle = null; }
+      P.x = W.home.x; P.y = W.home.y;
+      resetPursuit();
       var day = Math.floor(G.time / 1440);
       G.time = (G.hour >= 7 ? day + 1 : day) * 1440 + 7 * 60;
       P.energy = 60; P.hunger = Math.max(P.hunger, 30); P.exhaustT = 0;
@@ -602,9 +653,8 @@
       G.time = (h >= 7 ? day + 1 : day) * 1440 + 7 * 60;
       computeTime();
       P.energy = 100; P.hunger = Math.max(8, P.hunger - 18);
-      P.x = W.home.x; P.y = W.home.y; P.wanted = 0;
-      var Rg = G.ranger; Rg.x = W.rangerPost.x; Rg.y = W.rangerPost.y; Rg.state = 'patrol'; Rg.path = null; Rg.route = 0;
-      G.humans.forEach(function (hh) { hh.sus = 0; });
+      P.x = W.home.x; P.y = W.home.y;
+      resetPursuit();
       var saved = G.save();
       UI.toast('Good morning! Day ' + G.day + '.' + (saved ? ' Game saved.' : ''), null, 3500);
     });
@@ -733,7 +783,10 @@
     if (r.money) { P.money += r.money; UI.toast('+$' + r.money, 'money', 2500); }
     if (r.hat && P.ward.hats.indexOf(r.hat) < 0) { P.ward.hats.push(r.hat); if (P.outfit.hat === 'none') P.outfit.hat = r.hat; UI.toast('New hat: ' + SS.HATS[r.hat].name + '!', 'hat_' + r.hat, 3500); }
     if (r.top && P.ward.tops.indexOf(r.top) < 0) { P.ward.tops.push(r.top); UI.toast('New shirt: ' + SS.TOPS[r.top].name + '!', 'top_' + r.top, 3500); }
-    if (r.gear === 'rod') { P.gear.rod = true; UI.toast('You got a Fishing Rod! Face water and press E to fish.', 'rod', 4000); }
+    if (r.gear === 'rod') {
+      if (P.gear.rod) { P.money += 40; UI.toast('You already have a rod, so Raccoon paid you $40 instead.', 'money', 3500); }
+      else { P.gear.rod = true; UI.toast('You got a Fishing Rod! Face water and press E to fish.', 'rod', 4000); }
+    }
     if (r.gear === 'kart') {
       if (P.gear.kart) { P.money += 150; UI.toast('You already own a kart, so Raccoon gave you $150 instead.', 'money', 3500); }
       else { P.gear.kart = true; G.addKart(); UI.toast('Your Go-Kart is parked by the cave!', 'kart', 3500); }
@@ -807,6 +860,7 @@
       else pk.active = false;
     });
     W.bushes.forEach(function (b) { if (b.berry) b.hasBerries = true; });
+    if (UI.lootC) UI.renderLoot();
     if (!first && G.mode === 'play') UI.toast('A new day! The campers restocked their picnic baskets.', null, 3500);
   };
 
@@ -899,13 +953,15 @@
     var sc = cam.scale * cam.dpr;
     ctx.setTransform(sc, 0, 0, sc, -cam.x * sc, -cam.y * sc);
     var x0 = cam.x, y0 = cam.y, x1 = cam.x + cam.vw / cam.scale, y1 = cam.y + cam.vh / cam.scale;
-    ctx.fillStyle = '#2d4a24'; ctx.fillRect(x0 - 10, y0 - 10, x1 - x0 + 20, y1 - y0 + 20);
+    if (x1 > W.w || y1 > W.h) { ctx.fillStyle = '#2d4a24'; ctx.fillRect(x0 - 10, y0 - 10, x1 - x0 + 20, y1 - y0 + 20); }
     R.drawGround(ctx, x0, y0, x1, y1);
     R.drawWater(ctx, x0, y0, x1, y1, t);
     if (x1 > W.bridge.x0 - 50 && x0 < W.bridge.x1 + 50 && y1 > W.bridge.y0 - 50 && y0 < W.bridge.y1 + 50) R.drawBridge(ctx, W.bridgeFixed, t);
     if (x1 > 1180 && x0 < 1340 && y1 > 1930 && y0 < 2060) R.drawDam(ctx, 1260, 1990);
 
-    var items = W.queryDraw(x0 - 130, y0 - 40, x1 + 130, y1 + 260).slice();
+    // objects are anchored at their base and drawn upward, so look further below the view than above it
+    var cx0 = x0 - 160, cx1 = x1 + 160, cy0 = y0 - 40, cy1 = y1 + 260;
+    var items = W.queryDraw(cx0, cy0, cx1, cy1).filter(function (o) { return o.x > cx0 && o.x < cx1 && o.y > cy0 && o.y < cy1; });
     var inView = function (x, y) { return x > x0 - 80 && x < x1 + 80 && y > y0 - 40 && y < y1 + 120; };
     W.pickups.forEach(function (p) { if (p.active && inView(p.x, p.y)) items.push({ type: '_pickup', ref: p, sortY: p.y }); });
     G.humans.forEach(function (h) { if (h.present && !h.asleep && inView(h.x, h.y)) items.push({ type: '_human', ref: h, sortY: h.y }); });
@@ -941,6 +997,11 @@
       }
     }
     if (G.mode === 'play') SS.Fishing.drawWorld(ctx, G, t);
+
+    // lighting & tint (indicators below are drawn on top so they stay readable at night)
+    if (G.dark > 0.01) R.drawLighting(ctx, cam, G.dark, G.lightsNow, G.tint);
+    else if (G.tint) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = G.tint; ctx.fillRect(0, 0, cam.vw * cam.dpr, cam.vh * cam.dpr); }
+    ctx.setTransform(sc, 0, 0, sc, -cam.x * sc, -cam.y * sc);
 
     // tents with sleeping campers
     W.sites.forEach(function (s) {
@@ -981,10 +1042,6 @@
         R.rrect(ctx, P.x - 21, P.y - 69, 42 * rp, 6, 3, '#f2c14e');
       }
     }
-
-    // lighting & tint
-    if (G.dark > 0.01) R.drawLighting(ctx, cam, G.dark, G.lightsNow, G.tint);
-    else if (G.tint) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = G.tint; ctx.fillRect(0, 0, cam.vw * cam.dpr, cam.vh * cam.dpr); }
 
     // screen-space overlays
     ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
